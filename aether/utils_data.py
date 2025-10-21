@@ -165,9 +165,15 @@ def find_low_oscill(lst):
     :return: mean value of the low oscillations
     :rtype: float
     '''
+    # if the list is empty return nan
+    if len(lst) == 0:
+        return np.nan
     threshold = np.std(lst)
     mean_val = np.mean(lst)
     oscillating_val = [x for x in lst if abs(x - mean_val) < threshold]
+    # if all the values are removed return the original mean
+    if not oscillating_val:
+        return mean_val 
     oscillating_center_mean = np.mean(oscillating_val)
 
     return oscillating_center_mean
@@ -296,7 +302,11 @@ def find_noise(intervals, signal, oscillating_center_mean):
             mask_dx = np.abs(segment_dx) < (0.3 * max_val)
             segment_dx_filtered = segment_dx[mask_dx]
             # find baseline (center low oscillations)
-            oscillating_center_dx = find_low_oscill(segment_dx_filtered)
+            if segment_dx_filtered.size > 0:
+                oscillating_center_dx = find_low_oscill(segment_dx_filtered)
+            else:
+                # if the array is empty, the value is set to nan
+                oscillating_center_dx = np.nan
 
             # left interval (between resp events i-1 and i)
             segment_sx = np.array(signal[intervals[i-1][1]:intervals[i][0]])
@@ -304,7 +314,12 @@ def find_noise(intervals, signal, oscillating_center_mean):
             mask_sx = np.abs(segment_sx) < (0.3 * max_val)
             segment_sx_filtered = segment_sx[mask_sx]
             # find baseline (center low oscillations)
-            oscillating_center_sx = find_low_oscill(segment_sx_filtered)
+            if segment_sx_filtered.size > 0:
+                oscillating_center_sx = find_low_oscill(segment_sx_filtered)
+            else:
+                # if the array is empty, the value is set to nan
+                oscillating_center_sx = np.nan
+
 
             # check for nan values. If found, the other noise value will be used
             # check first for baseline dx previous interval, that in case will be
@@ -335,7 +350,11 @@ def find_noise(intervals, signal, oscillating_center_mean):
             segment_dx = np.array(signal[intervals[i][1]:intervals[i+1][0]])
             mask_dx = np.abs(segment_dx) < (0.3 * max_val)
             segment_dx_filtered = segment_dx[mask_dx]
-            oscillating_center_dx = find_low_oscill(segment_dx_filtered)
+            if segment_dx_filtered.size > 0:
+                oscillating_center_dx = find_low_oscill(segment_dx_filtered)
+            else:
+                # if the array is empty, the value is set to nan
+                oscillating_center_dx = np.nan
             
             if np.isnan(oscillating_center_dx):
                 # baseline dx None --> use oscillating_center_mean
@@ -348,21 +367,16 @@ def find_noise(intervals, signal, oscillating_center_mean):
             noise_val = noise_val_dx
 
         elif i == len(intervals)-1: #last interval
-            segment = np.array(signal[intervals[i-1][1]:intervals[i][0]])
-            mask = np.abs(segment) < (0.3 * max_val)
-            segment = segment[mask]
-            oscillating_center = find_low_oscill(segment)
-            if np.isnan(oscillating_center):
-                oscillating_center = noise_vals[i-1][1]
-            noise_val_sx = oscillating_center
-            noise_val_dx = oscillating_center #None
-            noise_val = noise_val_sx
 
             # left baseline
             segment_sx = np.array(signal[intervals[i-1][1]:intervals[i][0]])
             mask_sx = np.abs(segment_sx) < (0.3 * max_val)
             segment_sx_filtered = segment_sx[mask_sx]
-            oscillating_center_sx = find_low_oscill(segment_sx_filtered)
+            if segment_sx_filtered.size > 0:
+                oscillating_center_sx = find_low_oscill(segment_sx_filtered)
+            else:
+                # if the array is empty, the value is set to nan
+                oscillating_center_sx = np.nan
             
             if np.isnan(oscillating_center_sx):
                 #  baseline sx None --> use baseline dx previous interval
@@ -479,20 +493,24 @@ def find_resp_intervals(signal, intervals, oscillating_center_mean):
         else:
             delta = len(signal) - intervals[i][1]
             inter_mezzo_dx = signal[intervals[i][1]:intervals[i][1]+delta]
-
-        # determine point above baseline dx (if none i will use the sx val)
-        threshold_dx = noise_val_dx if noise_val_dx is not None else noise_val_sx
-        end_resp = inter_mezzo_dx > threshold_dx # boolean filter
-
-        # find first value above the threshold
-        if np.any(end_resp):
-            end_resp = np.argmax(end_resp) + intervals[i][1]
+        
+        if not len(inter_mezzo_dx) > 0:
+            #if is empty, set end_resp to the end of the interval
+            end_resp = intervals[i][1]
         else:
-            # no value above threshold, use the initial guess
-            if inter_mezzo_dx:
-                end_resp = np.argmax(inter_mezzo_dx)  + intervals[i][1]
+            # determine point above baseline dx (if none i will use the sx val)
+            threshold_dx = noise_val_dx if noise_val_dx is not None else noise_val_sx
+            end_resp = inter_mezzo_dx > threshold_dx # boolean filter
+
+            # find first value above the threshold
+            if np.any(end_resp):
+                end_resp = np.argmax(end_resp) + intervals[i][1]
             else:
-                end_resp = intervals[i][1]
+                # no value above threshold, use the initial guess
+                if inter_mezzo_dx:
+                    end_resp = np.argmax(inter_mezzo_dx)  + intervals[i][1]
+                else:
+                    end_resp = intervals[i][1]
 
         # determine left extreme (start_resp)
         # determine the interval between the current and previous ones
@@ -502,24 +520,27 @@ def find_resp_intervals(signal, intervals, oscillating_center_mean):
         else:
             inter_mezzo_sx = signal[0 :intervals[i][0]]
 
-        # the search here shuold be in the reverse order
-        if inter_mezzo_sx:
-            inter_mezzo_sx.reverse()
-
-        # determine point above baseline sx (if none i will use the dx val)
-        threshold_sx = noise_val_sx if noise_val_sx is not None else noise_val_dx
-        start_resp = inter_mezzo_sx > threshold_sx
-
-        # find the first value above threshold
-        if np.any(start_resp):
-            start_resp_offset = len(inter_mezzo_sx) - np.argmin(start_resp) + 1 
-            if i != 0:   
-                start_resp = start_resp_offset + resp_intervals[-1][1]
-            else:
-                start_resp = start_resp_offset
-        else:
-            #No value above threshold, use the initial value 
+        if not len(inter_mezzo_sx) > 0:
             start_resp = intervals[i][0]
+        else:
+            # the search here shuold be in the reverse order
+            if inter_mezzo_sx:
+                inter_mezzo_sx.reverse()
+
+            # determine point above baseline sx (if none i will use the dx val)
+            threshold_sx = noise_val_sx if noise_val_sx is not None else noise_val_dx
+            start_resp = inter_mezzo_sx > threshold_sx
+
+            # find the first value above threshold
+            if np.any(start_resp):
+                start_resp_offset = len(inter_mezzo_sx) - np.argmin(start_resp) + 1 
+                if i != 0:   
+                    start_resp = start_resp_offset + resp_intervals[-1][1]
+                else:
+                    start_resp = start_resp_offset
+            else:
+                #No value above threshold, use the initial value 
+                start_resp = intervals[i][0]
 
         # ensure the new start is never after the intial value for it
         if start_resp > intervals[i][0]:
