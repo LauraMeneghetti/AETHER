@@ -1,5 +1,7 @@
 '''Module for utility functions'''
+
 import numpy as np
+import torch
 from collections import Counter
 from scipy.signal import find_peaks
 from sklearn.cluster import KMeans
@@ -11,6 +13,7 @@ from sklearn.preprocessing import RobustScaler
 from scipy.fft import fft
 from scipy.integrate import simpson
 import pickle
+from datetime import datetime
 
 def extract_data(data_time, start, end):
     '''
@@ -856,3 +859,182 @@ def prep_data(csv_files,file_listapnee, test=False):
 
     return resp_segments,  np.array(labels_segments), np.array(feat_segments), np.array(id_patients), np.array(times_tot), np.array(id_times), np.array(resp_int)
 
+
+def check_apnea_criteria(X_test, y_pred, time_data, resp_int, sorted_idx, save_csv=False):
+    """
+    Function applying the apnea criteria of having minimum two conscutive events
+    classified as apnea to have a real apnea event.
+
+    :param np.array X_test: input sequence
+    :param np.array y_pred: binary predictions fro the respiratory events
+    :param np.array time_data: timestamps related to repsiratory intervals
+    :param np.array resp_int: reference time intervals for respiratory segments
+    :param torch.Tensor/np.array sorted_idx: original order (to be restored)
+    :param bool save_csv: If True, the output is saved in a csv file.
+    :return: new predictions filtered based on the apnea criteria, apnea event details
+             such as index of the starting and ending points and duration, and then 
+             related starting and ending times with duration
+    :rtype: lst, lst, lst
+    """
+    y_pred = np.asarray(y_pred).ravel()
+    
+    # sequence duration
+    seq_duration = np.array([len(seq) for seq in X_test])
+    
+    if sorted_idx is not None:
+        original_idx = torch.argsort(sorted_idx).cpu().numpy()
+        y_pred = y_pred[original_idx]
+        seq_duration = seq_duration[original_idx]
+
+    y_pred_apneas = np.zeros_like(y_pred, dtype=int)
+    apnea_events = []
+    apnea_events_time = []
+
+    current_apnea_start_idx = None
+    current_apnea_duration = 0
+
+    for i in range(len(y_pred)):
+        if y_pred[i] == 1:
+            if current_apnea_start_idx is None:
+                current_apnea_start_idx = i
+            current_apnea_duration += seq_duration[i]
+        
+        # end event if last element has been encountered  or the 0 value is found.
+        is_end = (y_pred[i] == 0) or (i == len(y_pred) - 1)
+        
+        if current_apnea_start_idx is not None and is_end:
+
+            end_idx_segment = i - 1
+            if y_pred[i] == 1:
+                 end_idx_segment = i
+
+            segment_count = end_idx_segment - current_apnea_start_idx + 1
+
+            if segment_count >= 2:
+                apnea_events.append((current_apnea_start_idx, end_idx_segment, current_apnea_duration))
+                y_pred_apneas[current_apnea_start_idx : end_idx_segment + 1] = 1
+                
+                # time: use index of resp_int and time_data
+                start_time_idx = resp_int[current_apnea_start_idx][0]
+                end_time_idx = resp_int[end_idx_segment][1]
+                apnea_events_time.append((
+                    time_data[start_time_idx], 
+                    time_data[end_time_idx], 
+                    current_apnea_duration
+                ))
+
+            # Reset tracking variables
+            current_apnea_start_idx = None
+            current_apnea_duration = 0
+
+    # csv file
+    if save_csv:
+        df = pd.DataFrame({'Original_Pred': y_pred.ravel(), 'Qualified_Apnea': y_pred_apneas})
+        df.to_csv('apneas.csv', index=False)
+        
+    return y_pred_apneas, apnea_events, apnea_events_time
+
+def convert_to_datetime(time_str):
+    '''
+    Function converting time strings in the correct format.
+
+    :param  str time_str: string indicating a specific time
+    :return: converted time string
+    :rtype: datatime
+    '''
+    # Add microseconds if missing
+    if '.' not in time_str:
+        time_str += '.000000'  # Add zero microseconds
+    return datetime.strptime(time_str, "%H:%M:%S.%f")
+
+
+def to_datetime(intervals):
+    '''
+    Function ensuring all time strings are in the correct format (with microseconds).
+
+    :param lst intervals: list of strating/ending point of intervals of interest
+    :return: list of intervals in the correct time format
+    :rtype: lst
+    '''
+    return [(convert_to_datetime(start), convert_to_datetime(end)) for start, end in intervals]
+
+def intersects(interval1, interval2):
+    '''
+    Function detecting the intersection between two intervals
+
+    :param lst interval1: first interval
+    :param lst interval2: second interval
+    :return: True or False value,  indicating the presence or not of an intersection
+    :rtype: bool
+    '''
+    return interval1[0] <= interval2[1] and interval2[0] <= interval1[1]
+
+def compare_intervals(list_true, list_pred):
+    '''
+    Function comparing true apneas with the predicted ones to understand
+    how many events are missing, detected, ...
+
+    :param lst list_true
+    :param lst list_pred
+    :return: tuple containing the true positive, the false negatives and the false
+             positives.
+    :rtype: tuple(lst, lst, lst)
+    '''
+    true_dt, pred_dt = to_datetime(list_true), to_datetime(list_pred)
+    
+    intersecting = []
+
+    matched_trueidx = set()
+    matched_predidx = set()
+
+    # Iterate through true intervals and find corresponding predicted intervals
+    for i, true_int in enumerate(true_dt):
+        for j, pred_int in enumerate(pred_dt):
+            # If the predicted interval has not been matched yet AND it intersects with the true interval
+            if j not in matched_predidx and intersects(true_int, pred_int):
+                intersecting.append((list_true[i], list_pred[j]))  # Salva le stringhe originali
+                matched_trueidx.add(i)
+                matched_predidx.add(j)
+                # Break the inner loop because we've found a match for this true apnea.
+                # This ensures one-to-one counting, even with multiple overlaps.
+                break 
+
+
+    # Find the unique intervals
+    # false negatives
+    unique_true = [list_true[i] for i in range(len(list_true)) if i not in matched_trueidx]
+    # false positives
+    unique_pred = [list_pred[j] for j in range(len(list_pred)) if j not in matched_predidx]
+
+    return intersecting, unique_true, unique_pred
+
+
+
+def merge_time_intervals(intervals):
+    '''
+    Function checking if there are intervals with an intersection
+    and in caseit merges them.
+
+    :param lst intervasl: list of intervals
+    :return: list of intervals in datatime format
+    :rtype: lst(tuple)
+    '''
+    # convert str in datatime obj
+    time_intervals = [(datetime.strptime(start, "%H:%M:%S.%f"), 
+                       datetime.strptime(end, "%H:%M:%S.%f")) for start, end in intervals]
+
+    # order interval based on initial time
+    time_intervals.sort(key=lambda x: x[0])
+
+    merged = [time_intervals[0]]
+
+    for start, end in time_intervals[1:]:
+        last_start, last_end = merged[-1]
+
+        # if there is an intersection, this value is updated
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+
+    return [(start.strftime("%H:%M:%S.%f"), end.strftime("%H:%M:%S.%f")) for start, end in merged]
