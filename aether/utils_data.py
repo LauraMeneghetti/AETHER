@@ -65,7 +65,7 @@ def extract_apnee(file_apnee):
     :rtype: list
     """
     apnea_events = []
-    folder_path = '../aether/Riscorati/'
+    folder_path = 'aether/Riscorati/'
 
     for file_path in file_apnee:
         filepath = os.path.join(folder_path, file_path)
@@ -1038,3 +1038,13 @@ def merge_time_intervals(intervals):
             merged.append((start, end))
 
     return [(start.strftime("%H:%M:%S.%f"), end.strftime("%H:%M:%S.%f")) for start, end in merged]
+
+def check_stringa(t):
+    '''
+    Function convertime in correct data format a string
+
+    :param datetime/str t: object under consideration
+    '''
+    if isinstance(t, str):
+        return t
+    return t.strftime("%H:%M:%S.%f")
