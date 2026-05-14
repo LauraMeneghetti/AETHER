@@ -56,16 +56,16 @@ def extract_data(data_time, start, end):
 
 
 
-def extract_apnee(file_apnee):
+def extract_apnee(file_apnee, folder_path):
     """
     Fubnction extracting apnea events from a scoring file.
 
     :param list[str] file_apnee: list containing the path to the scoring files
+    :param str folder_path: path to the folder with the files under consideration
     :return: list containing apnea events, i.e. (start, end) of each apnea event
     :rtype: list
     """
     apnea_events = []
-    folder_path = 'aether/Riscorati/'
 
     for file_path in file_apnee:
         filepath = os.path.join(folder_path, file_path)
@@ -114,7 +114,7 @@ def extract_apnee(file_apnee):
         elif 'Time' in apnea_file.columns and 'Duration' in apnea_file.columns:
             print("Detected format: Time / Duration (Format 2)")
 
-            # Pulisce i dati di colonna e li converte in stringhe pulite
+            # clean column data and conversion as string
             apnea_file['Time'] = apnea_file['Time'].astype(str).str.strip()
             apnea_file['Duration'] = apnea_file['Duration'].astype(str).str.strip()
 
@@ -618,7 +618,7 @@ def segmentation(mask_press, resp_flow):
 
 def label_segments(events, apnea_events, timestamps):
     """
-    Function labelling hte repsiratory events found based on the scoring
+    Function labelling the respiratory events found based on the scoring
     files.
 
     :param list events: list of tuples [(start_time, end_time), ...] defining
@@ -1048,3 +1048,6 @@ def check_stringa(t):
     if isinstance(t, str):
         return t
     return t.strftime("%H:%M:%S.%f")
+
+
+

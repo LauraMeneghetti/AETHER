@@ -44,8 +44,8 @@ def prep_data(csv_files,file_listapnee, test=False):
         mask_press = [float(x) for x in mask_press]
 
         file_apnee = file_listapnee[i]
-
-        apnee_events = extract_apnee(file_apnee)
+        folder_path = 'aether/Riscorati/'
+        apnee_events = extract_apnee(file_apnee, folder_path)
         print('Number apnee', len(apnee_events))
 
         #Data Segmentation
