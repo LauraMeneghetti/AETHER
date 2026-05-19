@@ -225,30 +225,8 @@ device = 'cuda'
 # Parametri presi dal tuo codice Keras
 optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=0.0001)
 # weight_dict deve essere un tensore con i pesi calcolati
-#weights = torch.tensor([weight_dict[0], weight_dict[1]], dtype=torch.float).to(device)
-
-
-
-# --- CALCOLO DINAMICO DEI PESI BILANCIATI (Inverse Frequency) ---
-# Conta automaticamente quanti campioni ci sono per ogni classe (0, 1, ecc.)
-counts = np.bincount(y_train)  # Usa y_train se vuoi calcolarli solo sul train, o y per l'intero dataset
-total_samples = counts.sum()
-n_classes = len(counts)
-
-# Formula: total / (n_classes * count)
-weights_inverse = total_samples / (n_classes * counts)
-
-# Convertiamo in tensore per PyTorch sulla GPU/CPU corretta
-weights = torch.tensor(weights_inverse, dtype=torch.float).to(device)
-criterion = torch.nn.CrossEntropyLoss(weight=weights)
-
-# Stampa di verifica con i valori estratti automaticamente
-print("--- Pesi Loss Calcolati Automaticamente ---")
-for i, w in enumerate(weights):
-    print(f"Classe {i} (Campioni: {counts[i]}): Peso assegnato = {w.item():.4f}")
-
-
-criterion = torch.nn.CrossEntropyLoss(weight=weights)
+weights = torch.tensor([weight_dict[0], weight_dict[1]], dtype=torch.float).to(device)
+criterion = torch.nn.CrossEntropyLoss() #weight=weights)
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -267,7 +245,7 @@ train_ds = TensorDataset(
     torch.tensor(x_train).float(),
     torch.tensor(y_train).long() # <-- Corretto se y_train è 1D
 )
-train_loader = DataLoader(train_ds, batch_size=64, shuffle=True) #, sampler=sampler)
+train_loader = DataLoader(train_ds, batch_size=64, sampler=sampler) # shuffle=True, sampler=sampler)
 
 # Scheduler (equivalente alla tua funzione scheduler)
 scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9048) # exp(-0.1) ≈ 0.9048
@@ -278,6 +256,44 @@ trigger_times = 0
 
 #state_dict = torch.load("autoenc_50ep_fulldata_10s_newparam.pth", weights_only=True)
 #model.load_state_dict(state_dict)
+
+
+from sklearn.metrics import f1_score, roc_auc_score
+
+def evaluate_model(model, x_test, y_test, device):
+    model.eval()
+    # Prepariamo il loader di test
+    test_ds = TensorDataset(x_test, y_test)
+    test_loader = DataLoader(test_ds, batch_size=128, shuffle=False)
+
+    all_preds = []
+    all_probs = []
+    all_targets = []
+
+    with torch.no_grad():
+        for batch_x, batch_y in test_loader:
+            batch_x = batch_x.unsqueeze(1).to(device)
+            outputs = model(batch_x)
+
+            # Applichiamo Softmax per le probabilità della classe 1 (Apnea)
+            probs = F.softmax(outputs, dim=1)[:, 1]
+            _, preds = torch.max(outputs, 1)
+
+            all_preds.extend(preds.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
+            all_targets.extend(batch_y.numpy())
+
+    # Calcolo metriche robuste per sbilanciamento
+    f1 = f1_score(all_targets, all_preds, zero_division=0)
+    try:
+        auc = roc_auc_score(all_targets, all_probs)
+    except ValueError:
+        auc = 0.5 # Se il modello predice una sola classe costantemente
+
+    return f1, auc
+
+
+
 
 for epoch in range(150):
     print('Epoch', epoch)
@@ -303,6 +319,9 @@ for epoch in range(150):
     #print('loss', loss.item()/len(train_loader))
     print(f'Train Loss Media: {epoch_loss / len(train_loader):.4f}')
 
+    val_f1, val_auc = evaluate_model(model, x_test, y_test, device)
+    print(f"Validation Metrics -> F1-Score: {val_f1:.4f} | AUC-ROC: {val_auc:.4f}")
+
     # # --- LOGICA VALIDAZIONE & EARLY STOPPING ---
     # model.eval()
     # val_loss = calculate_val_loss() # Funzione helper da definire
@@ -317,7 +336,7 @@ for epoch in range(150):
     #         print("Early stopping!")
     #         break
 
-torch.save(model.state_dict(), "autoenc_150ep_fulldata_10s_nweights_max.pth")
+torch.save(model.state_dict(), "autoenc_150ep_fulldata_10s_script2.pth")
 
 #state_dict = torch.load("autoenc_50ep_fulldata.pth", weights_only=True)
 #model.load_state_dict(state_dict)
