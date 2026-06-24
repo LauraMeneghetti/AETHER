@@ -231,24 +231,24 @@ optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=0.0001)
 
 # --- CALCOLO DINAMICO DEI PESI BILANCIATI (Inverse Frequency) ---
 # Conta automaticamente quanti campioni ci sono per ogni classe (0, 1, ecc.)
-counts = np.bincount(y_train)  # Usa y_train se vuoi calcolarli solo sul train, o y per l'intero dataset
-total_samples = counts.sum()
-n_classes = len(counts)
+# counts = np.bincount(y_train)  # Usa y_train se vuoi calcolarli solo sul train, o y per l'intero dataset
+# total_samples = counts.sum()
+# n_classes = len(counts)
 
-# Formula: total / (n_classes * count)
-weights_inverse = total_samples / (n_classes * counts)
+# # Formula: total / (n_classes * count)
+# weights_inverse = total_samples / (n_classes * counts)
 
-# Convertiamo in tensore per PyTorch sulla GPU/CPU corretta
-weights = torch.tensor(weights_inverse, dtype=torch.float).to(device)
-criterion = torch.nn.CrossEntropyLoss(weight=weights)
+# # Convertiamo in tensore per PyTorch sulla GPU/CPU corretta
+# weights = torch.tensor(weights_inverse, dtype=torch.float).to(device)
+criterion = torch.nn.CrossEntropyLoss() #weight=weights)
 
-# Stampa di verifica con i valori estratti automaticamente
-print("--- Pesi Loss Calcolati Automaticamente ---")
-for i, w in enumerate(weights):
-    print(f"Classe {i} (Campioni: {counts[i]}): Peso assegnato = {w.item():.4f}")
+# # Stampa di verifica con i valori estratti automaticamente
+# print("--- Pesi Loss Calcolati Automaticamente ---")
+# for i, w in enumerate(weights):
+#     print(f"Classe {i} (Campioni: {counts[i]}): Peso assegnato = {w.item():.4f}")
 
 
-criterion = torch.nn.CrossEntropyLoss(weight=weights)
+# criterion = torch.nn.CrossEntropyLoss(weight=weights)
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 

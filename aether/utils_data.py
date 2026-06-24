@@ -13,7 +13,8 @@ from sklearn.preprocessing import RobustScaler
 from scipy.fft import fft
 from scipy.integrate import simpson
 import pickle
-from datetime import datetime
+import matplotlib.pyplot as plt
+
 
 def extract_data(data_time, start, end):
     '''
@@ -232,7 +233,7 @@ def find_mask_intervals(signal, base_mask):
     # discard the smaller peaks (noise) and keep only the highest one
     # (highest centroid) by dividing them in two groups
     data = np.array(properties['peak_heights']).reshape(-1, 1)
-    kmeans = KMeans(n_clusters=2, random_state=42).fit(data)
+    kmeans = KMeans(n_clusters=2, n_init=10, random_state=42).fit(data)
     labels = kmeans.labels_
 
     high_cluster = np.argmax(kmeans.cluster_centers_)
@@ -245,7 +246,7 @@ def find_mask_intervals(signal, base_mask):
     low_values = data[labels == low_cluster]
     val_peaks = [float(f"{x[0]:.1f}") for x in low_values]
     threshold = sum(val_peaks)/len(val_peaks)
-    print(threshold)
+    print('t', threshold)
     above_threshold = np.abs(signal) > threshold  # Identify large movements
 
     # Label continuous regions where signal exceeds threshold
@@ -265,23 +266,106 @@ def find_mask_intervals(signal, base_mask):
 
             if start_mask is not None and end_mask is not None: 
                 if i!=1 and len(mask_intervals)>0:
-                    # check for autotriggers
-                    if start_mask - mask_intervals[-1][1] <= 8: 
-                        # store (start,end)
-                        mask_intervals[-1] = (mask_intervals[-1][0], int(end_mask)) 
-                        duration[-1] = end_mask - mask_intervals[-1][0]
-                    else:
-                        mask_intervals.append((int(start_mask), int(end_mask)))
-                        duration.append(end_mask - start_mask)
+                    # check for autotriggers ---> modified, sposto a dopo
+                    #if start_mask - mask_intervals[-1][1] <= 8: 
+                    #    # store (start,end)
+                    #    mask_intervals[-1] = (mask_intervals[-1][0], int(end_mask)) 
+                    #    duration[-1] = end_mask - mask_intervals[-1][0]
+
+                    # Soglia di puro rumore dello strumento (es. 3 campioni = ~120ms)
+                    # if start_mask - mask_intervals[-1][1] <= 3: 
+                    #     # Questo è rumore del sensore: fondiamo i segmenti
+                    #     mask_intervals[-1] = (mask_intervals[-1][0], int(end_mask))
+                    #     duration[-1] = end_mask - mask_intervals[-1][0]
+                    #     # altriemnti potrebbe essere un Double Trigger o un Auto-trigger reale
+                    #     # Li teniamo SEPARATI così la funzione delle asincronie può misurarli
+                    #     # lo verifico dopo
+                    # else:
+                    #     mask_intervals.append((int(start_mask), int(end_mask)))
+                    #     duration.append(end_mask - start_mask)
+
+                    mask_intervals.append((int(start_mask), int(end_mask)))
+                    duration.append(end_mask - start_mask)
                 else:
                     mask_intervals.append((int(start_mask), int(end_mask)))
                     duration.append(end_mask - start_mask)
 
     return mask_intervals
 
+
+
+from scipy.ndimage import label, median_filter  # Aggiunto median_filter
+from sklearn.cluster import KMeans
+
+def find_mask_intervals_local(signal, base_mask, fs=24):
+    """
+    Function performing the segmentation of the signal related to the
+    mask pressure using an adaptive local threshold.
+    """
+    # 1. Identifichiamo i picchi positivi grossolani
+    pos_peaks, properties = find_peaks(signal, height=0, distance=25)
+
+    # 2. Mantieni il tuo KMeans per scremare i picchi macro dagli artefatti minimi
+    data = np.array(properties['peak_heights']).reshape(-1, 1)
+    kmeans = KMeans(n_clusters=2, n_init=10, random_state=42).fit(data)
+    labels = kmeans.labels_
+
+    high_cluster = np.argmax(kmeans.cluster_centers_)
+    high_value_indices = np.where(labels == high_cluster)[0]
+    pos_peaks = pos_peaks[high_value_indices]
+
+    # =========================================================================
+    # NUOVA LOGICA: SOGLIA ADATTIVA LOCALE (Sostituisce il threshold statico)
+    # =========================================================================
+    # Definiamo una finestra mobile (es. 10 secondi di segnale)
+    # 10 secondi * 24 Hz = 240 campioni. Regolala se vuoi analisi più o meno strette.
+    window_size = 10 * fs 
+    
+    # Il filtro mediano estrae la linea di base (rumore di fondo/tendenza) istante per istante
+    baseline_mobile = median_filter(np.abs(signal), size=window_size)
+    
+    # Calcoliamo l'ampiezza media del cluster basso (il rumore residuo dei picchi)
+    low_cluster = np.argmin(kmeans.cluster_centers_)
+    low_values = data[labels == low_cluster]
+    val_peaks = [float(f"{x[0]:.1f}") for x in low_values]
+    offset_rumore = sum(val_peaks) / len(val_peaks) if len(val_peaks) > 0 else 0.5
+    
+    # La soglia ora è un vettore che si alza e si abbassa insieme alla baseline mobile
+    threshold_adaptive = baseline_mobile + offset_rumore
+    
+    # Identifichiamo i movimenti ampi usando la soglia locale punto per punto
+    above_threshold = np.abs(signal) > threshold_adaptive
+    # =========================================================================
+
+    # Label continuous regions where signal exceeds threshold (Resta identico!)
+    labeled_array, num_features = label(above_threshold)
+
+    # Extract start and end indices of the interval of each peak
+    mask_intervals = []
+    duration = []
+ 
+    for i in range(1, num_features + 1):
+        indices = np.where(labeled_array == i)[0]
+        filtered_peaks = pos_peaks[(pos_peaks >= indices[0]) & (pos_peaks <= indices[-1])]
+        
+        if len(filtered_peaks) != 0:
+            int_signal = signal[indices[0]:indices[-1]]
+            start_mask, end_mask = remove_outliers(indices[0], indices[-1], -3276.8, base_mask,  int_signal, filtered_peaks)
+
+            if start_mask is not None and end_mask is not None: 
+                if i != 1 and len(mask_intervals) > 0:
+                    mask_intervals.append((int(start_mask), int(end_mask)))
+                    duration.append(end_mask - start_mask)
+                else:
+                    mask_intervals.append((int(start_mask), int(end_mask)))
+                    duration.append(end_mask - start_mask)
+
+    return mask_intervals
+
+
 def find_noise(intervals, signal, oscillating_center_mean):
     '''
-    Function identifying the noise value between two identifiedn respiratory intervals.
+    Function identifying the noise value between two identified respiratory intervals.
     This value is needed to refine the baseline value for each event and thus the 
     related starting and ending points.
 
@@ -484,6 +568,7 @@ def find_resp_intervals(signal, intervals, oscillating_center_mean):
     resp_intervals = []
     duration=[]
     noise_int = []
+    aligned_intervals = []
     for i in range(len(intervals)):
         noise_val_sx, noise_val_dx = noise_vals[i]
         noise_val = np.mean([noise_val_sx, noise_val_dx])
@@ -527,7 +612,7 @@ def find_resp_intervals(signal, intervals, oscillating_center_mean):
             start_resp = intervals[i][0]
         else:
             # the search here shuold be in the reverse order
-            if inter_mezzo_sx:
+            if len(inter_mezzo_sx) > 0:
                 inter_mezzo_sx.reverse()
 
             # determine point above baseline sx (if none i will use the dx val)
@@ -545,7 +630,7 @@ def find_resp_intervals(signal, intervals, oscillating_center_mean):
                 #No value above threshold, use the initial value 
                 start_resp = intervals[i][0]
 
-        # ensure the new start is never after the intial value for it
+        # ensure the new start is never after the initial value for it
         if start_resp > intervals[i][0]:
             start_resp = intervals[i][0]
 
@@ -563,7 +648,7 @@ def find_resp_intervals(signal, intervals, oscillating_center_mean):
 
         # absolute idx found by adding start resp 
         absolute_peak_idx = max_peak_idx + start_resp
-        # refine borders by remving outliers
+        # refine borders by removing outliers
         start_resp, end_resp = remove_outliers(start_resp, end_resp, -327.68, 0,  inter_new, [absolute_peak_idx])
 
         # final extension starting and ending points
@@ -578,20 +663,82 @@ def find_resp_intervals(signal, intervals, oscillating_center_mean):
         # fix right extreme if end_resp is too far from intervals[i][1]
         if start_resp is not None and end_resp is not None:
             if end_resp - intervals[i][1] >= 25: #1 second of difference
-                end_resp = intervals[i][1] + (end_resp - intervals[i][1])/3
+                end_resp = intervals[i][1] + 25 #(end_resp - intervals[i][1])/3
 
-            # autotrigger check, merge tow intervals if satisfied
-            if i!=0 and start_resp - resp_intervals[-1][1]  <= 4: 
-                resp_intervals[-1] = (resp_intervals[-1][0], int(end_resp))
-                duration[-1] = end_resp - resp_intervals[-1][0]
-                noise_int[-1] = (noise_int[-1][0], noise_val_dx)
-            else:
-                # new interval refined
-                resp_intervals.append((int(start_resp), int(end_resp)))
-                duration.append(end_resp - start_resp)
-                noise_int.append((noise_val_sx, noise_val_dx))
 
-    return resp_intervals, noise_int
+            # # autotrigger check, merge tow intervals if satisfied
+            # if i!=0 and start_resp - resp_intervals[-1][1]  <= 4: 
+            #     resp_intervals[-1] = (resp_intervals[-1][0], int(end_resp))
+            #     duration[-1] = end_resp - resp_intervals[-1][0]
+            #     noise_int[-1] = (noise_int[-1][0], noise_val_dx)
+            #     # Uniamo anche il rispettivo intervallo macchina per non perdere il sincronismo
+            #     aligned_intervals[-1] = (aligned_intervals[-1][0], intervals[i][1])
+            # else:
+            #     # new interval refined
+            #     resp_intervals.append((int(start_resp), int(end_resp)))
+            #     duration.append(end_resp - start_resp)
+            #     noise_int.append((noise_val_sx, noise_val_dx))
+            #     aligned_intervals.append((intervals[i][0], intervals[i][1]))
+
+            resp_intervals.append((int(start_resp), int(end_resp)))
+            duration.append(end_resp - start_resp)
+            noise_int.append((noise_val_sx, noise_val_dx))
+            aligned_intervals.append((intervals[i][0], intervals[i][1]))
+
+    return resp_intervals, noise_int, aligned_intervals
+
+def plot_mask_peaks(signal, intervals):
+    signal = np.array(signal)
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(signal, label="Mask Pressure Signal", alpha=0.7)
+    plt.legend(fontsize=16)
+    #plt.plot(pos_peaks, signal[pos_peaks], "x")
+    for start, end in intervals:
+        plt.axvspan(start, end, color="#F08080", alpha=0.3)  # Highlight peak intervals
+
+    plt.xlabel("Time", fontsize=16)
+    plt.ylabel("Mask Pressure", fontsize=16)
+    plt.title("Mask Pressure Signal",fontsize=16) #Detected Mask Pressure Intervals", fontsize=16)
+    plt.legend(loc='best')
+    plt.grid()
+    plt.savefig('mask.png')
+    plt.show()
+
+
+def plot_resp_int(signal, resp_intervals, noise_vals, mask_intervals):
+    time_x = np.arange(0, len(signal))
+    plt.figure(figsize=(10, 5))
+    plt.plot(time_x, signal, label="Respiratory Signal", alpha=0.7)
+    plt.legend(fontsize=16)
+    # for start, end in mask_intervals:
+    #    plt.axvspan(start, end, color="red", alpha=0.3)  # Highlight peak intervals
+    # for start, end in mask_intervals:
+    #     plt.axvline(x=start, color="red", linestyle="--")
+    #     plt.axvline(x=end, color="red", linestyle="--")
+    # for start, end in mask_intervals:
+    #     plt.axvline(x=start, color="red", linestyle="--", label="Start" if start == mask_intervals[0][0] else "")
+    #     plt.axvline(x=end, color="red", linestyle="--", label="End" if end == mask_intervals[0][1] else "")
+
+    for i in range(len(resp_intervals)):
+        start = resp_intervals[i][0]
+        end = resp_intervals[i][1]
+        time_int = [x for x in range(start, end +1)]
+        noise_int = [noise_vals[i] for _ in range(len(time_int))]
+        plt.plot(time_int, noise_int)
+
+    for start, end in resp_intervals:
+        plt.axvspan(start, end, color="#90EE90", alpha=0.3)  # Highlight peak intervals
+
+    plt.xlabel("Time", fontsize=16)
+    plt.ylabel("Respiratory Flow (L/min)", fontsize=16)
+    plt.title("Respiratory Flow Signal",fontsize=16)# Detected Respiratory Intervals",fontsize=16)
+    plt.legend(loc='best')
+    plt.grid()
+    plt.savefig('Resp.png')
+    plt.show()
+
+    
 
 def segmentation(mask_press, resp_flow):
     '''
@@ -608,12 +755,17 @@ def segmentation(mask_press, resp_flow):
     mask_press_norm, base_mask = freq_val(mask_press)
     oscillating_center_mean = find_low_oscill(resp_flow)
 
-    mask_intervals = find_mask_intervals(mask_press_norm, base_mask)
+    #interval = (1002200, 1077275) #(596085, 596922) #(596085, 596922) #(596555, 596705) #(596085, 596922) #(275545, 276350) #(596085, 596922) #(36065, 36596) #(99477, 101722)   #(242277, 243100) # #(42277, 43380) 
+    #mask_press_norm = mask_press_norm[interval[0]: interval[1]] 
+    mask_intervals = find_mask_intervals_local(mask_press_norm, base_mask)
+    #plot_mask_peaks(mask_press_norm, mask_intervals)
 
-    resp_intervals, noise_int = find_resp_intervals(
+    #resp_flow = resp_flow[interval[0]: interval[1]]
+    resp_intervals, noise_int, aligned_mask_intervals = find_resp_intervals(
         resp_flow, mask_intervals, oscillating_center_mean)
+    #plot_resp_int(resp_flow, resp_intervals, noise_int, mask_intervals)
 
-    return resp_intervals, noise_int
+    return resp_intervals, noise_int, aligned_mask_intervals
 
 
 def label_segments(events, apnea_events, timestamps):
