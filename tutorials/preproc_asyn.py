@@ -652,7 +652,66 @@ def detect_underassistance(aligned_mask_intervals, resp_flow, mask_pressure, noi
 
     return underassistance_timeline
 
-import numpy as np
+def check_consecutive_oscillations(valori, max_scostamento=0.8, min_punti=3):
+    """
+    Verifica se nella lista sono presenti sequenze di punti consecutivi 
+    che rimangono confinati (oscillando o stallando) dentro una tolleranza ristretta.
+    
+    Parameters:
+    -----------
+    valori : list o np.array
+        La sequenza numerica da analizzare (es. la coda del flusso o della pressione).
+    max_scostamento : float
+        La massima differenza ammessa (Max - Min) all'interno della finestra 
+        per considerare i punti bloccati in un plateau/oscillazione stretta.
+    min_punti : int
+        Quanti valori consecutivi vicini cerchiamo (es. più di 2 -> min_punti=3).
+        
+    Returns:
+    --------
+    bool : True se viene trovata almeno una sequenza bloccata, False altrimenti.
+    list : Lista di tuple con gli indici (inizio, fine) delle sequenze trovate.
+    """
+    valori_np = np.asarray(valori, dtype=float)
+    n = len(valori_np)
+    
+    if n < min_punti:
+        return False, []
+    
+    sequenze_trovate = []
+    i = 0
+    
+    while i <= n - min_punti:
+        finestra_lunga = min_punti
+        ha_oscillazione = False
+        
+        # Estendi la finestra in avanti per catturare tutta la catena bloccata
+        while i + finestra_lunga <= n:
+            sotto_sequenza = valori_np[i : i + finestra_lunga]
+            
+            # Il cuore della modifica: misuriamo solo l'escursione totale nella finestra
+            valore_max = np.max(sotto_sequenza)
+            valore_min = np.min(sotto_sequenza)
+            escursione = valore_max - valore_min
+            
+            # Se l'escursione massima rimane dentro la tolleranza, i punti sono "bloccati"
+            if escursione <= max_scostamento:
+                ha_oscillazione = True
+                finestra_lunga += 1  # Prova ad allargare la finestra per il prossimo campione
+            else:
+                break  # L'escursione è troppo grande, la catena si è rotta
+                
+        if ha_oscillazione:
+            # Salviamo gli indici esatti della sequenza trovata
+            idx_fine = i + finestra_lunga - 1
+            sequenze_trovate.append((i, idx_fine))
+            # Spostiamo l'indice alla fine della sequenza per evitare sovrapposizioni
+            i = idx_fine - 1
+            
+        i += 1
+        
+    presente = len(sequenze_trovate) > 0
+    return presente, sequenze_trovate
 
 def detect_overshoot(aligned_mask_intervals, resp_flow, mask_pressure, noise_int, fs=24):
     """
@@ -697,37 +756,50 @@ def detect_overshoot(aligned_mask_intervals, resp_flow, mask_pressure, noise_int
         # =========================================================================
         idx_picco_pres = np.argmax(ciclo_pres)
         idx_picco_pres_inizio = np.argmax(ciclo_pres[:finestra_inizio])
-        if idx_picco_pres_inizio != idx_picco_pres:
-            idx_picco_pres_inizio = idx_picco_pres
-            finestra_inizio = idx_picco_pres_inizio + 3
+        # if idx_picco_pres_inizio != idx_picco_pres:
+        #     idx_picco_pres_inizio = idx_picco_pres
+        #     finestra_inizio = idx_picco_pres_inizio + 3
         picco_pressione_iniziale = ciclo_pres[idx_picco_pres_inizio]
         
         ha_overshoot_pressione = False
         
         if 0 < idx_picco_pres_inizio <= finestra_inizio:
             pendenza_salita_pres = (picco_pressione_iniziale - ciclo_pres[0]) / idx_picco_pres_inizio
+            ciclo_restante = ciclo_pres[idx_picco_pres_inizio + 1 : -2]
+
+            if np.all(np.array(ciclo_restante) < 0.95 * picco_pressione_iniziale):
+                oscill, sequenze = check_consecutive_oscillations(ciclo_pres[idx_picco_pres_inizio + 1 : -2], max_scostamento=0.8, min_punti=len(ciclo_pres)//4)
+                if pendenza_salita_pres and oscill:
+                    ha_overshoot_pressione = True
+
+            # if idx_picco_pres_inizio + 2 < lunghezza_ciclo:
+            #     valori_post_picco_pres = ciclo_pres[idx_picco_pres_inizio + 1 : idx_picco_pres_inizio + 4]
+            #     micro_crollo_pres_ok = np.any(valori_post_picco_pres < picco_pressione_iniziale)
+            # else:
+            #     micro_crollo_pres_ok = False
             
-            if idx_picco_pres_inizio + 2 < lunghezza_ciclo:
-                valori_post_picco_pres = ciclo_pres[idx_picco_pres_inizio + 1 : idx_picco_pres_inizio + 4]
-                micro_crollo_pres_ok = np.any(valori_post_picco_pres < picco_pressione_iniziale)
-            else:
-                micro_crollo_pres_ok = False
-            
-            idx_fine_plateau = min(lunghezza_ciclo - 2, idx_picco_pres_inizio + 6)
-            if idx_fine_plateau > (idx_picco_pres_inizio + 1):
-                plateau_pressione = ciclo_pres[idx_picco_pres_inizio + 1 : idx_fine_plateau]
+            # idx_fine_plateau = min(lunghezza_ciclo - 2, idx_picco_pres_inizio + 6)
+            # if idx_fine_plateau > (idx_picco_pres_inizio + 1):
+            #     plateau_pressione = ciclo_pres[idx_picco_pres_inizio + 1 : idx_fine_plateau]
                 
-                if len(plateau_pressione) >= 2:
-                    valore_massimo_plateau = np.max(plateau_pressione)
-                    valore_minimo_plateau = np.min(plateau_pressione)
-                    valore_medio_plateau = np.mean(plateau_pressione)
+            #     if len(plateau_pressione) >= 2:
+            #         valore_massimo_plateau = np.max(plateau_pressione)
+            #         valore_minimo_plateau = np.min(plateau_pressione)
+            #         valore_medio_plateau = np.mean(plateau_pressione)
                     
-                    salita_pres_ok = pendenza_salita_pres > 1.5
-                    plateau_stabile_alto = (valore_massimo_plateau - valore_minimo_plateau) <= 1.2
-                    pressione_alta = (np.max(ciclo_pres) * 0.75) < valore_medio_plateau < (np.max(ciclo_pres) * 0.90)
+            #         salita_pres_ok = pendenza_salita_pres > 1.5
+            #         plateau_stabile_alto = (valore_massimo_plateau - valore_minimo_plateau) <= 1.2
+            #         pressione_alta = (np.max(ciclo_pres) * 0.75) < valore_medio_plateau #< (np.max(ciclo_pres) * 0.95)
                     
-                    if salita_pres_ok and plateau_stabile_alto and pressione_alta and micro_crollo_pres_ok:
-                        ha_overshoot_pressione = True
+            #         # --- FILTRO AGGIUNTIVO PER LA TRASLAZIONE DELLA PRESSIONE (image_3bdd3c) ---
+            #         # In un vero overshoot il plateau è piatto o quasi orizzontale. 
+            #         # Calcoliamo la pendenza punto-punto del plateau barico.
+            #         pendenza_plateau_pres = (plateau_pressione[-1] - plateau_pressione[0]) / len(plateau_pressione)
+            #         # Se la pendenza è fortemente negativa (es. < -0.15), la pressione sta crollando, non è un plateau.
+            #         plateau_non_in_discesa = pendenza_plateau_pres > -0.15
+
+                    # if salita_pres_ok and plateau_stabile_alto and pressione_alta and micro_crollo_pres_ok and plateau_non_in_discesa:
+                    #     ha_overshoot_pressione = True
 
         # =========================================================================
         # 2. ANALISI FLUSSO (Spike unico -> Crollo -> Coda lineare pulita)
@@ -741,27 +813,37 @@ def detect_overshoot(aligned_mask_intervals, resp_flow, mask_pressure, noise_int
             idx_controllo_crollo = idx_picco_flow_assoluto + 3
             
             if idx_controllo_crollo < idx_fine_atto_attivo:
+                idx_fine = min(idx_fine_atto_attivo, idx_controllo_crollo + 4)
                 quota_minima_coda = max(zero_biologico_flow + 1.0, picco_flusso_iniziale * 0.35)
-                valori_coda_prolungata = ciclo_flow[idx_controllo_crollo : idx_fine_atto_attivo]
+                valori_coda_prolungata = ciclo_flow[idx_controllo_crollo : idx_fine] #_atto_attivo]
+
+                coda_completa = ciclo_flow[idx_controllo_crollo : idx_fine_atto_attivo]
                 
-                if len(valori_coda_prolungata) >= 4:
+                if len(valori_coda_prolungata) >= 2 and len(coda_completa) >= 4:
+                    # valori plateau all'inizio devono essere sostenuti
                     coda_sostenuta_attiva = np.all(valori_coda_prolungata > quota_minima_coda)
                     
-                    # --- FILTRO AGGIUNTIVO PER "TANTI PICCHI" (image_2f25f9) ---
+                    # --- FILTRO AGGIUNTIVO PER "TANTI PICCHI"  ---
                     # Calcoliamo quante volte il flusso risale (derivata positiva) all'interno della coda
-                    differenze_coda = np.diff(valori_coda_prolungata)
-                    num_risalite = np.sum(differenze_coda > 0.5) # Conta i rimbalzi significativi
-                    
+                    differenze_coda = np.diff(coda_completa)
+                    num_risalite = np.sum(differenze_coda > 0.8) # Conta i rimbalzi significativi
+                    # percentuale punti di risalita
+                    flusso_pulito_senza_picchi = (num_risalite / len(differenze_coda)) <= 0.25
+
                     # Dividiamo la coda in prima e seconda metà per la monotonicità macroscopica
-                    meta_coda = len(valori_coda_prolungata) // 2
-                    media_inizio_coda = np.mean(valori_coda_prolungata[:meta_coda])
-                    media_fine_coda = np.mean(valori_coda_prolungata[meta_coda:])
+                    meta_coda = len(coda_completa) // 2
+                    media_inizio_coda = np.mean(coda_completa[:meta_coda])
+                    media_fine_coda = np.mean(coda_completa[meta_coda:])
                     flusso_decresce_gradualmente = media_inizio_coda > (media_fine_coda + 1.0)
+
+                    #--- FILTRO AGGIUNTIVO SUL FATTORE DI FORMA DEL FLUSSO (Fattore Cresta) ---
+                    # Un vero overshoot ha un picco altissimo e isolato rispetto alla media dell'atto.
+                    # Nei respiri normali larghi (come image_3bdd3c), il rapporto Picco/Media è basso.
+                    rapporto_picco_media_flow = picco_flusso_iniziale / np.mean(ciclo_flow)
+                    flusso_ha_cuspide_isolata = rapporto_picco_media_flow > 1.8
+
                     
-                    # Un flusso reale decade in modo liscio: ammettiamo al massimo 1 micro-oscillazione
-                    flusso_pulito_senza_picchi = num_risalite <= 1
-                    
-                    if coda_sostenuta_attiva and flusso_decresce_gradualmente and flusso_pulito_senza_picchi:
+                    if coda_sostenuta_attiva and flusso_decresce_gradualmente and flusso_pulito_senza_picchi and flusso_ha_cuspide_isolata:
                         valore_fine_crollo_flow = ciclo_flow[idx_controllo_crollo]
                         
                         pendenza_media_salita_flow = (picco_flusso_iniziale - ciclo_flow[0]) / idx_picco_flow_assoluto
