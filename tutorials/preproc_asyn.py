@@ -766,10 +766,11 @@ def detect_overshoot(aligned_mask_intervals, resp_flow, mask_pressure, noise_int
         if 0 < idx_picco_pres_inizio <= finestra_inizio:
             pendenza_salita_pres = (picco_pressione_iniziale - ciclo_pres[0]) / idx_picco_pres_inizio
             ciclo_restante = ciclo_pres[idx_picco_pres_inizio + 1 : -2]
+            salita_ok = pendenza_salita_pres > 1.5
 
             if np.all(np.array(ciclo_restante) < 0.95 * picco_pressione_iniziale):
                 oscill, sequenze = check_consecutive_oscillations(ciclo_pres[idx_picco_pres_inizio + 1 : -2], max_scostamento=0.8, min_punti=len(ciclo_pres)//4)
-                if pendenza_salita_pres and oscill:
+                if salita_ok and oscill:
                     ha_overshoot_pressione = True
 
             # if idx_picco_pres_inizio + 2 < lunghezza_ciclo:
@@ -804,13 +805,17 @@ def detect_overshoot(aligned_mask_intervals, resp_flow, mask_pressure, noise_int
         # =========================================================================
         # 2. ANALISI FLUSSO (Spike unico -> Crollo -> Coda lineare pulita)
         # =========================================================================
-        idx_picco_flow_assoluto = np.argmax(ciclo_flow)
-        picco_flusso_iniziale = ciclo_flow[idx_picco_flow_assoluto]
+        idx_picco_flusso_inizio = np.argmax(ciclo_flow) #[:finestra_inizio])
+        picco_flusso_iniziale = ciclo_pres[idx_picco_flusso_inizio]
+
+        # idx_picco_flow_assoluto = np.argmax(ciclo_flow)
+        # picco_flusso_iniziale = ciclo_flow[idx_picco_flow_assoluto]
         
-        ha_picco_flusso_acuto = False
+        ha_picco_flusso = False
         
-        if 0 < idx_picco_flow_assoluto <= finestra_inizio:
-            idx_controllo_crollo = idx_picco_flow_assoluto + 3
+        if 0 < idx_picco_flusso_inizio <= finestra_inizio:
+
+            idx_controllo_crollo = idx_picco_flusso_inizio + 3
             
             if idx_controllo_crollo < idx_fine_atto_attivo:
                 idx_fine = min(idx_fine_atto_attivo, idx_controllo_crollo + 4)
@@ -846,7 +851,7 @@ def detect_overshoot(aligned_mask_intervals, resp_flow, mask_pressure, noise_int
                     if coda_sostenuta_attiva and flusso_decresce_gradualmente and flusso_pulito_senza_picchi and flusso_ha_cuspide_isolata:
                         valore_fine_crollo_flow = ciclo_flow[idx_controllo_crollo]
                         
-                        pendenza_media_salita_flow = (picco_flusso_iniziale - ciclo_flow[0]) / idx_picco_flow_assoluto
+                        pendenza_media_salita_flow = (picco_flusso_iniziale - ciclo_flow[0]) / idx_picco_flusso_inizio
                         pendenza_media_crollo_flow = (picco_flusso_iniziale - valore_fine_crollo_flow) / 3.0
                         
                         durata_coda_flow = idx_fine_atto_attivo - idx_controllo_crollo
@@ -858,16 +863,16 @@ def detect_overshoot(aligned_mask_intervals, resp_flow, mask_pressure, noise_int
                         struttura_graduale_flow = pendenza_media_crollo_flow > (1.8 * pendenza_media_coda_flow)
                         
                         if salita_flow_ok and crollo_flow_ok and struttura_graduale_flow:
-                            ha_picco_flusso_acuto = True
+                            ha_picco_flusso = True
                         
         # =========================================================================
         # 3. VERIFICA DI SIMULTANEITÀ TEMPORALE
         # =========================================================================
         coincidenza_temporale = False
-        if ha_overshoot_pressione and ha_picco_flusso_acuto:
-            coincidenza_temporale = abs(idx_picco_pres_inizio - idx_picco_flow_assoluto) <= 2
+        if ha_overshoot_pressione and ha_picco_flusso:
+            coincidenza_temporale = abs(idx_picco_pres_inizio - idx_picco_flusso_inizio) <= 2
             
-        if ha_overshoot_pressione and ha_picco_flusso_acuto and coincidenza_temporale:
+        if ha_overshoot_pressione and ha_picco_flusso and coincidenza_temporale:
             overshoot_timeline[start_m:end_m] = 1.0
             
     return overshoot_timeline
